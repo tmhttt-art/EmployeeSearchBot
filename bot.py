@@ -1,48 +1,47 @@
+import logging
 import os
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+
+from database import ensure_admin, init_db
+from handlers import callback, documents, messages, on_startup, start
+
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
-
-from search import search_employee
-
-# قراءة التوكن من متغير البيئة
-TOKEN = os.getenv("BOT_TOKEN")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 هلا بيك\n\n"
-        "ارسل اسم الموظف حتى أبحث عنه."
-    )
-
-
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
-
-    result = search_employee(name)
-
-    await update.message.reply_text(result)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def main():
-    print("Starting bot...")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "Set TELEGRAM_BOT_TOKEN or BOT_TOKEN before starting the bot."
+        )
 
-    app = Application.builder().token(TOKEN).build()
+    init_db()
+    ensure_admin()
 
-    # أمر /start
+    app = (
+        Application.builder()
+        .token(token)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .get_updates_connect_timeout(30)
+        .get_updates_read_timeout(30)
+        .post_init(on_startup)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, documents))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
+    app.add_handler(CallbackQueryHandler(callback))
 
-    # أي رسالة تعتبر بحث
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
-
-    print("Bot is running...")
-
-    app.run_polling()
+    logging.info("Bot is running...")
+    # Keep retrying when Telegram is temporarily unreachable instead of exiting.
+    app.run_polling(bootstrap_retries=-1)
 
 
 if __name__ == "__main__":
